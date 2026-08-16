@@ -99,6 +99,145 @@ function injectStyles() {
   margin-top: 8px; border-radius: 12px;
   border-top: 8px solid rgba(238,238,238,0.5);
 }
+
+/* ===== 浮动按钮 ===== */
+.float-btn {
+  position: fixed;
+  bottom: 24px;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 28px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  white-space: nowrap;
+}
+.float-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+.float-btn:active { transform: translateY(0); }
+.float-btn-left {
+  left: 20px;
+  background: var(--primary, #6366f1);
+  color: #fff;
+}
+.float-btn-right {
+  right: 20px;
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  color: var(--text, #1e1b4b);
+  border: 1px solid rgba(99,102,241,0.15);
+}
+.float-btn-icon { font-size: 18px; }
+
+/* ===== 状态弹窗 ===== */
+.status-overlay {
+  position: fixed; inset: 0; z-index: 8000;
+  background: rgba(0,0,0,0);
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.25s ease;
+  padding: 16px;
+}
+.status-overlay.show { background: rgba(0,0,0,0.45); }
+.status-modal {
+  background: rgba(255,255,255,0.96);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-radius: 20px;
+  width: 100%; max-width: 560px;
+  max-height: 85vh;
+  display: flex; flex-direction: column;
+  transform: scale(0.92);
+  transition: transform 0.25s ease;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.status-overlay.show .status-modal { transform: scale(1); }
+.status-modal-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 18px 24px;
+  border-bottom: 1px solid rgba(226,232,240,0.8);
+  flex-shrink: 0;
+}
+.status-modal-head h3 { font-size: 17px; font-weight: 700; }
+.status-close-btn {
+  width: 32px; height: 32px;
+  border: none; border-radius: 50%;
+  background: rgba(0,0,0,0.06);
+  cursor: pointer; font-size: 15px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.status-close-btn:hover { background: rgba(0,0,0,0.12); }
+.status-modal-body { padding: 16px 24px; overflow-y: auto; }
+.status-summary {
+  display: flex; gap: 20px; flex-wrap: wrap;
+  padding-bottom: 14px; margin-bottom: 14px;
+  border-bottom: 1px solid rgba(226,232,240,0.6);
+}
+.status-summary-item { display: flex; flex-direction: column; }
+.status-summary-label { font-size: 12px; color: var(--text-light, #6b7280); }
+.status-summary-value { font-size: 22px; font-weight: 700; }
+.status-hw-group { margin-bottom: 16px; }
+.status-hw-title {
+  font-size: 15px; font-weight: 700;
+  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 8px;
+}
+.status-hw-badge {
+  background: rgba(99,102,241,0.12);
+  color: var(--primary, #6366f1);
+  padding: 2px 10px; border-radius: 20px;
+  font-size: 12px; font-weight: 600;
+}
+.status-act-group { margin-bottom: 12px; }
+.status-act-title {
+  font-size: 13px; font-weight: 600;
+  color: var(--text-light, #6b7280);
+  margin-bottom: 6px; padding-left: 4px;
+}
+.status-person-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+}
+.status-person-row:hover { background: rgba(0,0,0,0.03); }
+.status-check-icon {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700;
+  flex-shrink: 0;
+}
+.status-check-icon.done {
+  background: rgba(34,197,94,0.15);
+  color: #16a34a;
+}
+.status-check-icon.pending {
+  background: rgba(239,68,68,0.12);
+  color: #dc2626;
+}
+.status-person-name { flex: 1; font-size: 14px; font-weight: 500; }
+.status-person-meta { font-size: 12px; color: var(--text-light, #6b7280); flex-shrink: 0; }
+.status-loading { text-align: center; padding: 40px; color: var(--text-light, #6b7280); }
+.status-spinner {
+  width: 32px; height: 32px;
+  border: 3px solid rgba(99,102,241,0.2);
+  border-top-color: var(--primary, #6366f1);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 12px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 `;
   const style = document.createElement('style');
   style.textContent = css;
@@ -987,6 +1126,11 @@ async function submitFiles() {
 
   submitting = true;
 
+  // 检查存储类型：如果 maxFileSize > 10MB，使用直传模式（R2/KV）
+  if (CONFIG && CONFIG.maxFileSize > 10 * 1024 * 1024) {
+    return submitDirectUpload(allFiles, areaFilesMap, psychIndex);
+  }
+
   // 构建文件元数据（不含实际文件数据，减少传输量）
   const fileMetas = allFiles.map(f => ({ name: f.name, size: f.size }));
 
@@ -1126,6 +1270,196 @@ async function submitFiles() {
   }
 }
 
+// ============ 分块上传模式（KV 存储后端）============
+async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
+  const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB per chunk (SCF限制6MB)
+
+  // Step 1: 调用 prepare 获取文件存储路径
+  const fileMetas = allFiles.map(f => ({ name: f.name, size: f.size }));
+
+  let prepData;
+  try {
+    const prepRes = await fetch(`${API}/upload/prepare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        homework: state.homework,
+        activity: state.activity || '',
+        name: state.name,
+        workName: cleanWorkName(state.workName),
+        files: fileMetas,
+        areaFiles: areaFilesMap,
+        psychIndex,
+      }),
+    });
+    prepData = await prepRes.json();
+  } catch (e) {
+    submitting = false;
+    showAlert(`准备上传失败：${e.message}`, 'error');
+    return;
+  }
+
+  if (!prepData.success) {
+    submitting = false;
+    showAlert(prepData.error || '准备上传失败', 'error');
+    return;
+  }
+
+  const items = prepData.items;
+  const serverChunkSize = prepData.chunkSize || CHUNK_SIZE;
+
+  // 预计算总大小和准备 blob
+  let totalSize = 0;
+  const itemBlobs = [];
+
+  for (const item of items) {
+    let blob;
+    if (item.type === 'file') {
+      blob = allFiles[item.sourceIdx];
+    } else if (item.type === 'zip') {
+      const zipContents = {};
+      for (const entry of item.zipEntries) {
+        const buf = await allFiles[entry.sourceIdx].arrayBuffer();
+        zipContents[entry.name] = new Uint8Array(buf);
+      }
+      blob = new Blob([fflate.zipSync(zipContents)], { type: 'application/zip' });
+    }
+    itemBlobs.push(blob);
+    totalSize += blob.size;
+  }
+
+  // 显示上传进度 UI
+  document.getElementById('content').innerHTML = `
+    <div class="card upload-progress-card animate-in">
+      <div class="upload-progress-title">正在上传文件...</div>
+      <div class="upload-progress-sub">${items.length} 个文件，共 ${formatSize(totalSize)}</div>
+      <div class="upload-file-list" id="uploadFileList">
+        ${items.map((item, i) => `
+          <div class="upload-file-name" id="file-row-${i}">
+            <span>${item.filename || item.key.split('/').pop()}</span>
+            <span class="fsize">${formatSize(itemBlobs[i].size)}</span>
+            <span class="upload-status pending" id="file-status-${i}">等待中</span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="progress-row">
+        <span>总进度</span>
+        <span class="progress-text">0%</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" style="width: 0%"></div>
+      </div>
+    </div>
+  `;
+
+  let uploadedBytes = 0;
+  const uploadFileInfos = [];
+
+  // Step 2: 逐文件逐块上传
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const blob = itemBlobs[i];
+    const chunkCount = Math.ceil(blob.size / serverChunkSize);
+
+    const statusEl = document.getElementById(`file-status-${i}`);
+    if (statusEl) {
+      statusEl.className = 'upload-status uploading';
+      statusEl.textContent = '上传中';
+    }
+
+    for (let c = 0; c < chunkCount; c++) {
+      const start = c * serverChunkSize;
+      const end = Math.min(start + serverChunkSize, blob.size);
+      const chunk = blob.slice(start, end);
+
+      const formData = new FormData();
+      formData.append('fileKey', item.key);
+      formData.append('chunkIndex', c);
+      formData.append('data', chunk);
+
+      try {
+        const chunkRes = await fetch(`${API}/upload/chunk`, {
+          method: 'POST',
+          body: formData,
+        });
+        const chunkData = await chunkRes.json();
+        if (!chunkData.success) {
+          throw new Error(chunkData.error || `块 ${c + 1}/${chunkCount} 上传失败`);
+        }
+      } catch (e) {
+        if (statusEl) {
+          statusEl.className = 'upload-status error';
+          statusEl.textContent = '失败';
+        }
+        render();
+        showAlert(`文件 "${item.filename}" 上传失败：${e.message}`, 'error');
+        submitting = false;
+        return;
+      }
+
+      uploadedBytes += (end - start);
+      const percent = Math.round((uploadedBytes / totalSize) * 100);
+      const fillEl = document.querySelector('.progress-fill');
+      const textEl = document.querySelector('.progress-text');
+      if (fillEl) fillEl.style.width = percent + '%';
+      if (textEl) textEl.textContent = percent + '%';
+    }
+
+    if (statusEl) {
+      statusEl.className = 'upload-status done';
+      statusEl.textContent = '完成';
+    }
+
+    const ext = (item.filename || item.key.split('/').pop()).split('.').pop().toLowerCase();
+    const contentTypes = {
+      jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+      webp: 'image/webp', bmp: 'image/bmp', heic: 'image/heic',
+      pdf: 'application/pdf',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      mp4: 'video/mp4', mov: 'video/quicktime', zip: 'application/zip',
+    };
+
+    uploadFileInfos.push({
+      key: item.key,
+      size: blob.size,
+      chunkCount,
+      contentType: contentTypes[ext] || 'application/octet-stream',
+    });
+  }
+
+  // Step 3: 调用 finalize 完成上传
+  let finalizeData;
+  try {
+    const finalizeRes = await fetch(`${API}/upload/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        homework: state.homework,
+        activity: state.activity || '',
+        name: state.name,
+        workName: cleanWorkName(state.workName),
+        files: uploadFileInfos,
+      }),
+    });
+    finalizeData = await finalizeRes.json();
+  } catch (e) {
+    render();
+    showAlert(`完成上传失败：${e.message}`, 'error');
+    submitting = false;
+    return;
+  }
+
+  if (finalizeData.success) {
+    renderSuccess(finalizeData);
+  } else {
+    render();
+    showAlert(finalizeData.error || '完成上传失败', 'error');
+  }
+  submitting = false;
+}
+
 // ============ 渲染成功页面 ============
 function renderSuccess(data) {
   renderSteps();
@@ -1220,3 +1554,168 @@ async function init() {
 
 injectStyles();
 init();
+
+// ============================================================
+// 浮动按钮 & 作业提交情况弹窗
+// ============================================================
+
+function createFloatButtons() {
+  // 左下角：作业提交情况
+  const leftBtn = document.createElement('button');
+  leftBtn.className = 'float-btn float-btn-left';
+  leftBtn.id = 'statusBtn';
+  leftBtn.innerHTML = '<span class="float-btn-icon">📊</span> 作业提交情况';
+  leftBtn.style.touchAction = 'manipulation';
+  leftBtn.addEventListener('click', showStatusModal);
+
+  // 右下角：作业收取（进入后台）
+  const rightBtn = document.createElement('button');
+  rightBtn.className = 'float-btn float-btn-right';
+  rightBtn.id = 'adminBtn';
+  rightBtn.innerHTML = '<span class="float-btn-icon">🔧</span> 作业收取';
+  rightBtn.style.touchAction = 'manipulation';
+  rightBtn.addEventListener('click', () => {
+    window.location.href = 'collect.html';
+  });
+
+  document.body.appendChild(leftBtn);
+  document.body.appendChild(rightBtn);
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString('zh-CN', {
+    month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+async function showStatusModal() {
+  // 创建弹窗骨架
+  const overlay = document.createElement('div');
+  overlay.className = 'status-overlay';
+  overlay.innerHTML = `
+    <div class="status-modal">
+      <div class="status-modal-head">
+        <h3>📊 作业提交情况</h3>
+        <button class="status-close-btn">✕</button>
+      </div>
+      <div class="status-modal-body">
+        <div class="status-loading">
+          <div class="status-spinner"></div>
+          正在加载提交情况...
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('show'));
+
+  // 关闭逻辑
+  const closeBtn = overlay.querySelector('.status-close-btn');
+  const closeHandler = () => {
+    overlay.classList.remove('show');
+    setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 250);
+  };
+  closeBtn.addEventListener('click', closeHandler);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeHandler();
+  });
+
+  // 加载数据
+  const body = overlay.querySelector('.status-modal-body');
+  try {
+    const res = await fetch(`${API}/status`);
+    const data = await res.json();
+    if (!data.success) {
+      body.innerHTML = `<div class="status-loading">加载失败：${escapeHtml(data.error || '未知错误')}</div>`;
+      return;
+    }
+    body.innerHTML = renderStatusContent(data);
+  } catch (e) {
+    body.innerHTML = `<div class="status-loading">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderStatusContent(data) {
+  const { status, totalExpected, totalSubmitted, totalFiles } = data;
+  const submitRate = totalExpected > 0 ? Math.round((totalSubmitted / totalExpected) * 100) : 0;
+
+  let html = `
+    <div class="status-summary">
+      <div class="status-summary-item">
+        <span class="status-summary-label">应交人数</span>
+        <span class="status-summary-value">${totalExpected}</span>
+      </div>
+      <div class="status-summary-item">
+        <span class="status-summary-label">已交人数</span>
+        <span class="status-summary-value" style="color:#16a34a;">${totalSubmitted}</span>
+      </div>
+      <div class="status-summary-item">
+        <span class="status-summary-label">未交人数</span>
+        <span class="status-summary-value" style="color:#dc2626;">${totalExpected - totalSubmitted}</span>
+      </div>
+      <div class="status-summary-item">
+        <span class="status-summary-label">提交率</span>
+        <span class="status-summary-value">${submitRate}%</span>
+      </div>
+    </div>
+  `;
+
+  for (const [hwKey, hwData] of Object.entries(status)) {
+    // 统计该作业下提交情况
+    let hwTotal = 0, hwSubmitted = 0;
+    for (const actList of Object.values(hwData)) {
+      hwTotal += actList.length;
+      hwSubmitted += actList.filter(s => s.submitted).length;
+    }
+    html += `
+      <div class="status-hw-group">
+        <div class="status-hw-title">
+          ${escapeHtml(hwKey)}
+          <span class="status-hw-badge">${hwSubmitted}/${hwTotal}</span>
+        </div>
+    `;
+    for (const [actKey, actList] of Object.entries(hwData)) {
+      if (actKey === '__default__') {
+        // 无活动的作业，直接列出人员
+        for (const p of actList) {
+          html += renderPersonRow(p);
+        }
+      } else {
+        html += `<div class="status-act-group">`;
+        html += `<div class="status-act-title">${escapeHtml(actKey)}</div>`;
+        for (const p of actList) {
+          html += renderPersonRow(p);
+        }
+        html += `</div>`;
+      }
+    }
+    html += `</div>`;
+  }
+  return html;
+}
+
+function renderPersonRow(p) {
+  const icon = p.submitted ? '✓' : '✗';
+  const iconClass = p.submitted ? 'done' : 'pending';
+  const meta = p.submitted
+    ? `${p.fileCount}个文件`
+    : '未提交';
+  return `
+    <div class="status-person-row">
+      <span class="status-check-icon ${iconClass}">${icon}</span>
+      <span class="status-person-name">${escapeHtml(p.name)}</span>
+      <span class="status-person-meta">${meta}</span>
+    </div>
+  `;
+}
+
+// 延迟创建浮动按钮（等 DOM 加载完成）
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', createFloatButtons);
+} else {
+  createFloatButtons();
+}
