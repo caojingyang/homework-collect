@@ -5,6 +5,11 @@
 
 // API 地址：由 config.js 中的 API_BASE 定义，若未加载则回退到同源 /api
 const API = typeof API_BASE !== 'undefined' ? API_BASE : '/api';
+// 直连 Cloudflare Worker 的备用地址（绕过 CloudBase 代理）
+// 优先使用 config.js 中的 DIRECT_API_BASE，否则回退到同源 /api（适用于 Cloudflare Pages）
+const DIRECT_API = typeof DIRECT_API_BASE !== 'undefined' ? DIRECT_API_BASE : '/api';
+// 标记直连是否可用（首次失败后不再尝试）
+let directApiAvailable = null; // null=未知, true=可用, false=不可用
 
 const $ = (sel) => document.querySelector(sel);
 const app = document.getElementById('app');
@@ -533,9 +538,40 @@ function countFilesRecursive(node) {
 // ============================================================
 
 // 通用 fetch（带鉴权头），返回原始 Response
+// 对于下载相关请求，如果 CloudBase 代理失败，自动尝试直连 Cloudflare Worker
 async function apiFetch(url, options = {}) {
   const headers = { 'X-Admin-Password': adminPassword, ...(options.headers || {}) };
-  const res = await fetch(url, { ...options, headers });
+  
+  // 构造 CloudBase 代理 URL
+  const proxyUrl = url.startsWith('/api/') ? API + url.substring(4) : url;
+  
+  // 构造直连 URL（同源，绕过 CloudBase 代理）
+  const directUrl = url.startsWith('/api/') ? DIRECT_API + url.substring(4) : url;
+  
+  // 判断是否是下载相关请求（需要回退）
+  const isDownloadReq = url.includes('/download/');
+  
+  // 如果直连已确认可用，且是下载请求，优先使用直连
+  if (isDownloadReq && directApiAvailable === true) {
+    try {
+      const res = await fetch(directUrl, { ...options, headers });
+      if (res.status === 401 || res.status === 403) {
+        showToast('登录已过期，请重新登录', 'error');
+        adminPassword = '';
+        selectedFiles.clear();
+        closeModal();
+        renderLogin();
+        throw new Error('未授权');
+      }
+      return res;
+    } catch (e) {
+      console.warn('[apiFetch] 直连失败，回退到代理:', e.message);
+      directApiAvailable = false;
+    }
+  }
+  
+  // 尝试 CloudBase 代理
+  const res = await fetch(proxyUrl, { ...options, headers });
   // 401/403 表示密码失效，跳回登录
   if (res.status === 401 || res.status === 403) {
     showToast('登录已过期，请重新登录', 'error');
@@ -545,17 +581,36 @@ async function apiFetch(url, options = {}) {
     renderLogin();
     throw new Error('未授权');
   }
+  
+  // 对于下载请求，如果代理返回错误，尝试直连
+  if (isDownloadReq && !res.ok && directApiAvailable !== false) {
+    console.warn(`[apiFetch] 代理返回 ${res.status}，尝试直连...`);
+    try {
+      const directRes = await fetch(directUrl, { ...options, headers });
+      if (directRes.ok) {
+        console.log('[apiFetch] 直连成功，后续下载请求将优先使用直连');
+        directApiAvailable = true;
+        return directRes;
+      }
+    } catch (e) {
+      console.warn('[apiFetch] 直连也不可用:', e.message);
+      directApiAvailable = false;
+    }
+  }
+  
   return res;
 }
 
 // JSON 请求封装
 async function apiJSON(url, options = {}) {
+  // 将 /api/xxx 转换为 API + /xxx，支持跨域代理
+  const fullUrl = url.startsWith('/api/') ? API + url.substring(4) : url;
   const headers = { 'X-Admin-Password': adminPassword, ...(options.headers || {}) };
   if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
     options.body = JSON.stringify(options.body);
   }
-  const res = await fetch(url, { ...options, headers });
+  const res = await fetch(fullUrl, { ...options, headers });
   if (res.status === 401 || res.status === 403) {
     showToast('登录已过期，请重新登录', 'error');
     adminPassword = '';
@@ -882,11 +937,11 @@ function buildFileHTML(file, parentLevel) {
       <span class="file-icon">${icon}</span>
       <div class="file-info">
         <span class="file-name-text">${escapeHtml(name)}${isBak ? ' <span class="badge badge-bak">备份</span>' : ''}</span>
-        <span class="file-meta-text">${sizeStr} \u00B7 ${dateStr}</span>
+        <span class="file-meta-text">${sizeStr}  ${dateStr}</span>
       </div>
       <div class="file-actions">
-        <button class="act-btn btn-preview" title="预览" data-key="${escapeHtml(key)}" data-name="${escapeHtml(name)}" data-type="${fileType}" ${canPreview ? '' : 'disabled'}>\u{1F441}\u{FE0F}</button>
-        <button class="act-btn btn-download" title="下载" data-key="${escapeHtml(key)}" data-name="${escapeHtml(name)}">\u{2B07}\u{FE0F}</button>
+        <button class="act-btn btn-preview" title="预览" data-key="${escapeHtml(key)}" data-name="${escapeHtml(name)}" data-type="${fileType}" data-size="${file.size || 0}" ${canPreview ? '' : 'disabled'}>\u{1F441}\u{FE0F}</button>
+        <button class="act-btn btn-download" title="下载" data-key="${escapeHtml(key)}" data-name="${escapeHtml(name)}" data-size="${file.size || 0}">\u{2B07}\u{FE0F}</button>
         <button class="act-btn btn-rename" title="重命名" data-key="${escapeHtml(key)}" data-name="${escapeHtml(name)}" ${canRename ? '' : 'disabled'}>\u{270F}\u{FE0F}</button>
         <button class="act-btn btn-delete" title="删除" data-key="${escapeHtml(key)}" data-name="${escapeHtml(name)}">\u{1F5D1}\u{FE0F}</button>
       </div>
@@ -911,7 +966,7 @@ function bindFileEvents() {
     if (btn.disabled) return;
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      previewFile(btn.dataset.key, btn.dataset.name, btn.dataset.type);
+      previewFile(btn.dataset.key, btn.dataset.name, btn.dataset.type, parseInt(btn.dataset.size) || 0);
     });
   });
 
@@ -919,7 +974,7 @@ function bindFileEvents() {
   document.querySelectorAll('.btn-download').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      downloadFile(btn.dataset.key, btn.dataset.name);
+      downloadFile(btn.dataset.key, btn.dataset.name, parseInt(btn.dataset.size) || 0);
     });
   });
 
@@ -969,7 +1024,7 @@ function updateSelectionBar() {
 // 文件预览
 // ============================================================
 
-async function previewFile(key, filename, fileType) {
+async function previewFile(key, filename, fileType, fileSize) {
   // 回收之前的 blob URL
   if (currentBlobUrl) {
     URL.revokeObjectURL(currentBlobUrl);
@@ -987,7 +1042,7 @@ async function previewFile(key, filename, fileType) {
         <div class="preview-unsupported-icon">\u{1F4E6}</div>
         <p class="preview-unsupported-text">无法预览此格式，请下载后查看</p>
         <button class="btn btn-primary" style="width:auto;padding:10px 24px;"
-                onclick="closeModal(); downloadFile('${escapeHtml(key)}', '${escapeHtml(filename)}')">\u{2B07}\u{FE0F} 下载文件</button>
+                onclick="closeModal(); downloadFile('${escapeHtml(key)}', '${escapeHtml(filename)}', ${fileSize || 0})">\u{2B07}\u{FE0F} 下载文件</button>
       </div>
     `, { closeOnOutside: true });
     return;
@@ -1005,12 +1060,8 @@ async function previewFile(key, filename, fileType) {
   `, { closeOnOutside: true });
 
   try {
-    const res = await apiFetch(`/api/preview?key=${encodeURIComponent(key)}`);
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || '预览失败');
-    }
-    const blob = await res.blob();
+    // 使用统一下载函数（支持大文件分块），preview 和 download 端点返回的内容相同
+    const blob = await fetchFileBlob(key, fileSize);
     currentBlobUrl = URL.createObjectURL(blob);
 
     let previewHtml = '';
@@ -1181,6 +1232,101 @@ function showDeleteConfirm(key, filename) {
 // 暴露到全局供 modal onclick 使用
 window.downloadFile = downloadFile;
 
+// CloudBase SCF 响应体限制 6MB，超过 5MB 的文件需要分块下载
+const CHUNK_THRESHOLD = 5 * 1024 * 1024; // 5MB
+const CHUNK_MAX_RETRIES = 3; // 每个分块最大重试次数
+const CHUNK_RETRY_DELAY = 1000; // 重试间隔（毫秒）
+
+// 延迟函数
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 分块下载大文件，返回 Blob（使用 /api/download/chunk 端点，避免 Worker 加载整个文件到内存）
+async function fetchBlobChunked(key, totalSize, onChunkProgress) {
+  console.log('[fetchBlobChunked] 开始分块下载', { key, totalSize });
+
+  // Step 1: 获取文件分块信息（带重试）
+  let info = null;
+  for (let attempt = 0; attempt <= CHUNK_MAX_RETRIES; attempt++) {
+    const infoRes = await apiFetch(`/api/download/info?key=${encodeURIComponent(key)}`);
+    if (infoRes.ok) {
+      const data = await infoRes.json();
+      if (data.success) {
+        info = data;
+        break;
+      }
+    }
+    if (attempt < CHUNK_MAX_RETRIES) {
+      console.log(`[fetchBlobChunked] 获取分块信息重试 ${attempt + 1}/${CHUNK_MAX_RETRIES}`);
+      await sleep(CHUNK_RETRY_DELAY * (attempt + 1));
+    } else {
+      const errData = infoRes.ok ? await infoRes.json().catch(() => ({})) : {};
+      throw new Error(errData.error || `获取文件信息失败（${infoRes.status}）`);
+    }
+  }
+
+  const chunkCount = info.chunkCount || 1;
+  const chunks = [];
+  let downloaded = 0;
+
+  console.log(`[fetchBlobChunked] 分块数: ${chunkCount}, 大小: ${totalSize}`);
+
+  // Step 2: 逐块下载（每个分块带重试）
+  for (let i = 0; i < chunkCount; i++) {
+    let chunkBuf = null;
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= CHUNK_MAX_RETRIES; attempt++) {
+      try {
+        const res = await apiFetch(`/api/download/chunk?key=${encodeURIComponent(key)}&chunkIndex=${i}`);
+        if (res.ok) {
+          chunkBuf = await res.arrayBuffer();
+          break;
+        }
+        // 解析错误信息
+        const errData = await res.json().catch(() => ({}));
+        lastError = new Error(errData.error || `分块 ${i + 1}/${chunkCount} 下载失败（HTTP ${res.status}）`);
+        console.warn(`[fetchBlobChunked] 分块 ${i + 1}/${chunkCount} 失败 (HTTP ${res.status}), 重试 ${attempt + 1}/${CHUNK_MAX_RETRIES}`);
+      } catch (err) {
+        lastError = err;
+        console.warn(`[fetchBlobChunked] 分块 ${i + 1}/${chunkCount} 异常: ${err.message}, 重试 ${attempt + 1}/${CHUNK_MAX_RETRIES}`);
+      }
+
+      if (attempt < CHUNK_MAX_RETRIES) {
+        await sleep(CHUNK_RETRY_DELAY * (attempt + 1));
+      }
+    }
+
+    if (!chunkBuf) {
+      throw lastError || new Error(`分块 ${i + 1}/${chunkCount} 下载失败`);
+    }
+
+    chunks.push(new Uint8Array(chunkBuf));
+    downloaded += chunkBuf.byteLength;
+    if (onChunkProgress) onChunkProgress(downloaded, totalSize);
+  }
+
+  console.log(`[fetchBlobChunked] 下载完成, 总大小: ${downloaded}`);
+  return new Blob(chunks);
+}
+
+// 统一的文件下载函数：小文件直接下载，大文件分块下载
+async function fetchFileBlob(key, fileSize, onProgress) {
+  if (fileSize && fileSize > CHUNK_THRESHOLD) {
+    return fetchBlobChunked(key, fileSize, (downloaded, total) => {
+      if (onProgress) onProgress(Math.round((downloaded / total) * 100));
+    });
+  }
+  // 小文件直接下载
+  const res = await apiFetch(`/api/download?key=${encodeURIComponent(key)}`);
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || '下载失败');
+  }
+  return responseToBlobWithProgress(res, onProgress);
+}
+
 // 从 Response 流式读取为 Blob，并追踪进度
 async function responseToBlobWithProgress(res, onProgress) {
   const contentLength = parseInt(res.headers.get('Content-Length') || '0');
@@ -1219,8 +1365,8 @@ function updateDlProgress(percent) {
   if (text) text.textContent = percent + '%';
 }
 
-// 单文件下载（带进度）
-async function downloadFile(key, filename) {
+// 单文件下载（带进度，大文件自动分块）
+async function downloadFile(key, filename, fileSize) {
   const fname = filename || (key ? key.split('/').pop() : 'download');
 
   showModal(`
@@ -1246,12 +1392,7 @@ async function downloadFile(key, filename) {
   `, { closeOnOutside: false });
 
   try {
-    const res = await apiFetch(`/api/download?key=${encodeURIComponent(key)}`);
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || '下载失败');
-    }
-    const blob = await responseToBlobWithProgress(res, (percent) => {
+    const blob = await fetchFileBlob(key, fileSize, (percent) => {
       const statusEl = document.getElementById('dl-file-status-0');
       if (statusEl) statusEl.textContent = `下载中 ${percent}%`;
       updateDlProgress(percent);
@@ -1335,10 +1476,8 @@ async function downloadWithProgress(files, zipName) {
             updateDlProgress(overall);
           });
         } else {
-          // Worker 代理下载（非 Cloudinary 回退）
-          const res = await apiFetch(`/api/download?key=${encodeURIComponent(file.key)}`);
-          if (!res.ok) throw new Error('下载失败');
-          blob = await responseToBlobWithProgress(res, (percent) => {
+          // Worker 代理下载（支持大文件分块）
+          blob = await fetchFileBlob(file.key, file.size, (percent) => {
             updateDlFileStatus(i, 'downloading', `下载中 ${percent}%`);
             const fileDl = fileBaseSize * percent / 100;
             const overall = totalSize > 0 ? Math.round(((prevDownloaded + fileDl) / totalSize) * 100) : 0;
