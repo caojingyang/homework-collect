@@ -920,7 +920,6 @@ function buildFolderHTML(name, node, level) {
 function buildFileHTML(file, parentLevel) {
   const icon = getFileIcon(file);
   const sizeStr = formatSize(file.size);
-  const dateStr = formatDate(file.uploaded);
   const fileType = getFileType(file);
   const isBak = file.isBak;
   const key = file.key;
@@ -937,7 +936,7 @@ function buildFileHTML(file, parentLevel) {
       <span class="file-icon">${icon}</span>
       <div class="file-info">
         <span class="file-name-text">${escapeHtml(name)}${isBak ? ' <span class="badge badge-bak">备份</span>' : ''}</span>
-        <span class="file-meta-text">${sizeStr}  ${dateStr}</span>
+        <span class="file-meta-text">${sizeStr}</span>
       </div>
       <div class="file-actions">
         <button class="act-btn btn-preview" title="预览" data-key="${escapeHtml(key)}" data-name="${escapeHtml(name)}" data-type="${fileType}" data-size="${file.size || 0}" ${canPreview ? '' : 'disabled'}>\u{1F441}\u{FE0F}</button>
@@ -1056,12 +1055,23 @@ async function previewFile(key, filename, fileType, fileSize) {
     </div>
     <div class="preview-body">
       <div class="loading"><div class="spinner"></div>加载中...</div>
+      <div class="dl-progress-row" style="margin-top:12px;">
+        <span>加载进度</span>
+        <span id="dl-progress-detail">${formatSize(0)} / ${formatSize(fileSize || 0)}</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-bar-fill" id="dl-progress-fill" style="width:0%"></div>
+      </div>
     </div>
   `, { closeOnOutside: true });
 
   try {
     // 使用统一下载函数（支持大文件分块），preview 和 download 端点返回的内容相同
-    const blob = await fetchFileBlob(key, fileSize);
+    const blob = await fetchFileBlob(key, fileSize, (downloaded, total, speed) => {
+      const percent = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+      updateDlProgress(percent);
+      updateDlDetail(downloaded, total, speed);
+    });
     currentBlobUrl = URL.createObjectURL(blob);
 
     let previewHtml = '';
@@ -1243,6 +1253,7 @@ function sleep(ms) {
 }
 
 // 分块下载大文件，返回 Blob（使用 /api/download/chunk 端点，避免 Worker 加载整个文件到内存）
+// 优化：并行下载多个分块，大幅提升速度
 async function fetchBlobChunked(key, totalSize, onChunkProgress) {
   console.log('[fetchBlobChunked] 开始分块下载', { key, totalSize });
 
@@ -1267,30 +1278,29 @@ async function fetchBlobChunked(key, totalSize, onChunkProgress) {
   }
 
   const chunkCount = info.chunkCount || 1;
-  const chunks = [];
+  const chunks = new Array(chunkCount);
   let downloaded = 0;
 
   console.log(`[fetchBlobChunked] 分块数: ${chunkCount}, 大小: ${totalSize}`);
 
-  // Step 2: 逐块下载（每个分块带重试）
-  for (let i = 0; i < chunkCount; i++) {
+  // Step 2: 下载单个分块（带重试）
+  async function downloadChunk(chunkIndex) {
     let chunkBuf = null;
     let lastError = null;
 
     for (let attempt = 0; attempt <= CHUNK_MAX_RETRIES; attempt++) {
       try {
-        const res = await apiFetch(`/api/download/chunk?key=${encodeURIComponent(key)}&chunkIndex=${i}`);
+        const res = await apiFetch(`/api/download/chunk?key=${encodeURIComponent(key)}&chunkIndex=${chunkIndex}`);
         if (res.ok) {
           chunkBuf = await res.arrayBuffer();
           break;
         }
-        // 解析错误信息
         const errData = await res.json().catch(() => ({}));
-        lastError = new Error(errData.error || `分块 ${i + 1}/${chunkCount} 下载失败（HTTP ${res.status}）`);
-        console.warn(`[fetchBlobChunked] 分块 ${i + 1}/${chunkCount} 失败 (HTTP ${res.status}), 重试 ${attempt + 1}/${CHUNK_MAX_RETRIES}`);
+        lastError = new Error(errData.error || `分块 ${chunkIndex + 1}/${chunkCount} 下载失败（HTTP ${res.status}）`);
+        console.warn(`[fetchBlobChunked] 分块 ${chunkIndex + 1}/${chunkCount} 失败 (HTTP ${res.status}), 重试 ${attempt + 1}/${CHUNK_MAX_RETRIES}`);
       } catch (err) {
         lastError = err;
-        console.warn(`[fetchBlobChunked] 分块 ${i + 1}/${chunkCount} 异常: ${err.message}, 重试 ${attempt + 1}/${CHUNK_MAX_RETRIES}`);
+        console.warn(`[fetchBlobChunked] 分块 ${chunkIndex + 1}/${chunkCount} 异常: ${err.message}, 重试 ${attempt + 1}/${CHUNK_MAX_RETRIES}`);
       }
 
       if (attempt < CHUNK_MAX_RETRIES) {
@@ -1299,23 +1309,54 @@ async function fetchBlobChunked(key, totalSize, onChunkProgress) {
     }
 
     if (!chunkBuf) {
-      throw lastError || new Error(`分块 ${i + 1}/${chunkCount} 下载失败`);
+      throw lastError || new Error(`分块 ${chunkIndex + 1}/${chunkCount} 下载失败`);
     }
 
-    chunks.push(new Uint8Array(chunkBuf));
-    downloaded += chunkBuf.byteLength;
-    if (onChunkProgress) onChunkProgress(downloaded, totalSize);
+    return new Uint8Array(chunkBuf);
   }
 
-  console.log(`[fetchBlobChunked] 下载完成, 总大小: ${downloaded}`);
+  // Step 3: 并行下载所有分块（最多 4 个并发）
+  const MAX_CONCURRENT = Math.min(4, chunkCount);
+  const chunkIndices = Array.from({ length: chunkCount }, (_, i) => i);
+
+  // 使用并发池模式
+  let currentIndex = 0;
+  async function worker() {
+    while (currentIndex < chunkCount) {
+      const idx = currentIndex++;
+      const chunk = await downloadChunk(idx);
+      chunks[idx] = chunk;
+      downloaded += chunk.byteLength;
+      if (onChunkProgress) onChunkProgress(downloaded, totalSize);
+    }
+  }
+
+  // 启动 MAX_CONCURRENT 个 worker 并等待全部完成
+  const workers = [];
+  for (let w = 0; w < MAX_CONCURRENT; w++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+
+  console.log(`[fetchBlobChunked] 下载完成, 总大小: ${downloaded}, 并发数: ${MAX_CONCURRENT}`);
   return new Blob(chunks);
 }
 
 // 统一的文件下载函数：小文件直接下载，大文件分块下载
+// onProgress 回调接收 (downloadedBytes, totalBytes, speedBps) 三个参数
 async function fetchFileBlob(key, fileSize, onProgress) {
+  const startTime = Date.now();
+
+  function reportProgress(downloaded, total) {
+    if (!onProgress) return;
+    const elapsed = (Date.now() - startTime) / 1000;
+    const speed = elapsed > 0 ? downloaded / elapsed : 0;
+    onProgress(downloaded, total, speed);
+  }
+
   if (fileSize && fileSize > CHUNK_THRESHOLD) {
     return fetchBlobChunked(key, fileSize, (downloaded, total) => {
-      if (onProgress) onProgress(Math.round((downloaded / total) * 100));
+      reportProgress(downloaded, total);
     });
   }
   // 小文件直接下载
@@ -1324,7 +1365,10 @@ async function fetchFileBlob(key, fileSize, onProgress) {
     const errData = await res.json().catch(() => ({}));
     throw new Error(errData.error || '下载失败');
   }
-  return responseToBlobWithProgress(res, onProgress);
+  return responseToBlobWithProgress(res, (percent) => {
+    const downloaded = Math.round(fileSize * percent / 100);
+    reportProgress(downloaded, fileSize);
+  });
 }
 
 // 从 Response 流式读取为 Blob，并追踪进度
@@ -1365,9 +1409,24 @@ function updateDlProgress(percent) {
   if (text) text.textContent = percent + '%';
 }
 
+function updateDlDetail(downloaded, total, speed) {
+  const detailEl = document.getElementById('dl-progress-detail');
+  if (!detailEl) return;
+  const pct = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+  detailEl.textContent = `${formatSize(downloaded)} / ${formatSize(total)}  ·  ${formatSpeed(speed)}  ·  ${pct}%`;
+}
+
+function formatSpeed(bytesPerSec) {
+  if (!bytesPerSec || bytesPerSec < 1) return '0 B/s';
+  if (bytesPerSec < 1024) return bytesPerSec.toFixed(0) + ' B/s';
+  if (bytesPerSec < 1048576) return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+  return (bytesPerSec / 1048576).toFixed(2) + ' MB/s';
+}
+
 // 单文件下载（带进度，大文件自动分块）
 async function downloadFile(key, filename, fileSize) {
   const fname = filename || (key ? key.split('/').pop() : 'download');
+  const totalSize = fileSize || 0;
 
   showModal(`
     <div class="modal-head">
@@ -1378,12 +1437,12 @@ async function downloadFile(key, filename, fileSize) {
       <div class="dl-file-list">
         <div class="dl-file-row">
           <span class="dl-file-name">${escapeHtml(fname)}</span>
-          <span class="dl-file-status downloading" id="dl-file-status-0">下载中 0%</span>
+          <span class="dl-file-status downloading" id="dl-file-status-0">准备中...</span>
         </div>
       </div>
       <div class="dl-progress-row">
         <span>下载进度</span>
-        <span id="dl-progress-text">0%</span>
+        <span id="dl-progress-detail">${formatSize(0)} / ${formatSize(totalSize)}</span>
       </div>
       <div class="progress-track">
         <div class="progress-bar-fill" id="dl-progress-fill" style="width:0%"></div>
@@ -1392,15 +1451,19 @@ async function downloadFile(key, filename, fileSize) {
   `, { closeOnOutside: false });
 
   try {
-    const blob = await fetchFileBlob(key, fileSize, (percent) => {
+    const blob = await fetchFileBlob(key, fileSize, (downloaded, total, speed) => {
+      const percent = total > 0 ? Math.round((downloaded / total) * 100) : 0;
       const statusEl = document.getElementById('dl-file-status-0');
       if (statusEl) statusEl.textContent = `下载中 ${percent}%`;
       updateDlProgress(percent);
+      updateDlDetail(downloaded, total, speed);
     });
 
     const statusEl = document.getElementById('dl-file-status-0');
     if (statusEl) { statusEl.className = 'dl-file-status done'; statusEl.textContent = '\u2713 完成'; }
     updateDlProgress(100);
+    const detailEl = document.getElementById('dl-progress-detail');
+    if (detailEl) detailEl.textContent = `${formatSize(totalSize)} / ${formatSize(totalSize)}  ·  完成`;
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1443,7 +1506,7 @@ async function downloadWithProgress(files, zipName) {
       </div>
       <div class="dl-progress-row">
         <span>总进度</span>
-        <span id="dl-progress-text">0%</span>
+        <span id="dl-progress-detail">${formatSize(0)} / ${formatSize(totalSize)}</span>
       </div>
       <div class="progress-track">
         <div class="progress-bar-fill" id="dl-progress-fill" style="width:0%"></div>
@@ -1456,10 +1519,11 @@ async function downloadWithProgress(files, zipName) {
     let completedFiles = 0;
     const totalSize = files.reduce((s, f) => s + (f.size || 0), 0);
     let downloadedSize = 0;
+    const batchStartTime = Date.now();
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      updateDlFileStatus(i, 'downloading', '下载中 0%');
+      updateDlFileStatus(i, 'downloading', '下载中...');
       const fileBaseSize = file.size || 0;
       const prevDownloaded = downloadedSize;
 
@@ -1472,16 +1536,22 @@ async function downloadWithProgress(files, zipName) {
           blob = await responseToBlobWithProgress(res, (percent) => {
             updateDlFileStatus(i, 'downloading', `下载中 ${percent}%`);
             const fileDl = fileBaseSize * percent / 100;
-            const overall = totalSize > 0 ? Math.round(((prevDownloaded + fileDl) / totalSize) * 100) : 0;
-            updateDlProgress(overall);
+            const overallDl = prevDownloaded + fileDl;
+            const overallPct = totalSize > 0 ? Math.round((overallDl / totalSize) * 100) : 0;
+            updateDlProgress(overallPct);
+            const elapsed = (Date.now() - batchStartTime) / 1000;
+            const speed = elapsed > 0 ? overallDl / elapsed : 0;
+            updateDlDetail(overallDl, totalSize, speed);
           });
         } else {
           // Worker 代理下载（支持大文件分块）
-          blob = await fetchFileBlob(file.key, file.size, (percent) => {
-            updateDlFileStatus(i, 'downloading', `下载中 ${percent}%`);
-            const fileDl = fileBaseSize * percent / 100;
-            const overall = totalSize > 0 ? Math.round(((prevDownloaded + fileDl) / totalSize) * 100) : 0;
-            updateDlProgress(overall);
+          blob = await fetchFileBlob(file.key, file.size, (downloaded, total, speed) => {
+            const filePct = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+            updateDlFileStatus(i, 'downloading', `下载中 ${filePct}%`);
+            const overallDl = prevDownloaded + downloaded;
+            const overallPct = totalSize > 0 ? Math.round((overallDl / totalSize) * 100) : 0;
+            updateDlProgress(overallPct);
+            updateDlDetail(overallDl, totalSize, speed);
           });
         }
 
@@ -1489,7 +1559,8 @@ async function downloadWithProgress(files, zipName) {
         zipContents[file.key] = new Uint8Array(await blob.arrayBuffer());
         completedFiles++;
         updateDlFileStatus(i, 'done', '\u2713 完成');
-        updateDlProgress(Math.round((completedFiles / files.length) * 100));
+        const overallPct = Math.round((completedFiles / files.length) * 100);
+        updateDlProgress(overallPct);
       } catch (err) {
         updateDlFileStatus(i, 'error', '失败');
       }
