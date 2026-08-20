@@ -256,6 +256,13 @@ function formatSize(bytes) {
   return (bytes / 1048576).toFixed(1) + 'MB';
 }
 
+function formatSpeed(bytesPerSec) {
+  if (!bytesPerSec || bytesPerSec < 1) return '0 B/s';
+  if (bytesPerSec < 1024) return bytesPerSec.toFixed(0) + ' B/s';
+  if (bytesPerSec < 1048576) return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+  return (bytesPerSec / 1048576).toFixed(2) + ' MB/s';
+}
+
 function cleanWorkName(name) {
   if (!name) return '';
   return name.trim().replace(/[《《\[]/g, '').replace(/[》》\]]/g, '');
@@ -1270,9 +1277,10 @@ async function submitFiles() {
   }
 }
 
-// ============ 分块上传模式（KV 存储后端）============
+// ============ 分块上传模式（KV 存储后端，并行多线程上传）============
 async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
-  const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB per chunk (SCF限制6MB)
+  const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB per chunk
+  const MAX_CONCURRENT_CHUNKS = 3; // 每个文件最多并发上传3个分块
 
   // Step 1: 调用 prepare 获取文件存储路径
   const fileMetas = allFiles.map(f => ({ name: f.name, size: f.size }));
@@ -1328,7 +1336,7 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
     totalSize += blob.size;
   }
 
-  // 显示上传进度 UI
+  // 显示上传进度 UI（含速度显示）
   document.getElementById('content').innerHTML = `
     <div class="card upload-progress-card animate-in">
       <div class="upload-progress-title">正在上传文件...</div>
@@ -1344,18 +1352,61 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
       </div>
       <div class="progress-row">
         <span>总进度</span>
-        <span class="progress-text">0%</span>
+        <span class="progress-detail" id="uploadProgressDetail">${formatSize(0)} / ${formatSize(totalSize)}  ·  0 B/s  ·  0%</span>
       </div>
       <div class="progress-bar">
-        <div class="progress-fill" style="width: 0%"></div>
+        <div class="progress-fill" id="uploadProgressBar" style="width: 0%"></div>
       </div>
     </div>
   `;
 
+  const uploadStartTime = Date.now();
   let uploadedBytes = 0;
+
+  function updateProgress() {
+    const percent = totalSize > 0 ? Math.round((uploadedBytes / totalSize) * 100) : 0;
+    const elapsed = (Date.now() - uploadStartTime) / 1000;
+    const speed = elapsed > 0 ? uploadedBytes / elapsed : 0;
+    const fillEl = document.getElementById('uploadProgressBar');
+    const detailEl = document.getElementById('uploadProgressDetail');
+    if (fillEl) fillEl.style.width = percent + '%';
+    if (detailEl) detailEl.textContent = `${formatSize(uploadedBytes)} / ${formatSize(totalSize)}  ·  ${formatSpeed(speed)}  ·  ${percent}%`;
+  }
+
+  // 上传单个分块（带重试）
+  async function uploadSingleChunk(fileKey, chunkIndex, chunkBlob) {
+    const MAX_RETRIES = 3;
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const formData = new FormData();
+        formData.append('fileKey', fileKey);
+        formData.append('chunkIndex', chunkIndex);
+        formData.append('data', chunkBlob);
+
+        const chunkRes = await fetch(`${API}/upload/chunk`, {
+          method: 'POST',
+          body: formData,
+        });
+        const chunkData = await chunkRes.json();
+        if (chunkData.success) {
+          return chunkBlob.size;
+        }
+        lastError = new Error(chunkData.error || `块 ${chunkIndex} 上传失败`);
+      } catch (e) {
+        lastError = e;
+      }
+      if (attempt < MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+    throw lastError;
+  }
+
   const uploadFileInfos = [];
 
-  // Step 2: 逐文件逐块上传
+  // Step 2: 逐文件上传（每个文件内并行上传分块）
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const blob = itemBlobs[i];
@@ -1367,25 +1418,12 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
       statusEl.textContent = '上传中';
     }
 
-    for (let c = 0; c < chunkCount; c++) {
-      const start = c * serverChunkSize;
-      const end = Math.min(start + serverChunkSize, blob.size);
-      const chunk = blob.slice(start, end);
-
-      const formData = new FormData();
-      formData.append('fileKey', item.key);
-      formData.append('chunkIndex', c);
-      formData.append('data', chunk);
-
+    if (chunkCount <= 1) {
+      // 小文件直接上传（不分块）
       try {
-        const chunkRes = await fetch(`${API}/upload/chunk`, {
-          method: 'POST',
-          body: formData,
-        });
-        const chunkData = await chunkRes.json();
-        if (!chunkData.success) {
-          throw new Error(chunkData.error || `块 ${c + 1}/${chunkCount} 上传失败`);
-        }
+        const size = await uploadSingleChunk(item.key, 0, blob);
+        uploadedBytes += size;
+        updateProgress();
       } catch (e) {
         if (statusEl) {
           statusEl.className = 'upload-status error';
@@ -1396,13 +1434,56 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
         submitting = false;
         return;
       }
+    } else {
+      // 大文件：并行上传分块
+      const chunkUploads = [];
+      for (let c = 0; c < chunkCount; c++) {
+        const start = c * serverChunkSize;
+        const end = Math.min(start + serverChunkSize, blob.size);
+        const chunkBlob = blob.slice(start, end);
+        chunkUploads.push({ index: c, blob: chunkBlob, size: end - start });
+      }
 
-      uploadedBytes += (end - start);
-      const percent = Math.round((uploadedBytes / totalSize) * 100);
-      const fillEl = document.querySelector('.progress-fill');
-      const textEl = document.querySelector('.progress-text');
-      if (fillEl) fillEl.style.width = percent + '%';
-      if (textEl) textEl.textContent = percent + '%';
+      // 使用并发池模式上传分块
+      let chunkIdx = 0;
+      let fileFailed = false;
+      let fileError = null;
+
+      async function chunkWorker() {
+        while (chunkIdx < chunkUploads.length && !fileFailed) {
+          const task = chunkUploads[chunkIdx++];
+          try {
+            await uploadSingleChunk(item.key, task.index, task.blob);
+            uploadedBytes += task.size;
+            updateProgress();
+
+            // 更新文件状态
+            const filePercent = Math.round(((chunkIdx) / chunkCount) * 100);
+            if (statusEl) statusEl.textContent = `上传中 ${filePercent}%`;
+          } catch (e) {
+            fileFailed = true;
+            fileError = e;
+          }
+        }
+      }
+
+      // 启动 MAX_CONCURRENT_CHUNKS 个 worker
+      const workers = [];
+      for (let w = 0; w < Math.min(MAX_CONCURRENT_CHUNKS, chunkCount); w++) {
+        workers.push(chunkWorker());
+      }
+      await Promise.all(workers);
+
+      if (fileFailed) {
+        if (statusEl) {
+          statusEl.className = 'upload-status error';
+          statusEl.textContent = '失败';
+        }
+        render();
+        showAlert(`文件 "${item.filename}" 上传失败：${fileError.message}`, 'error');
+        submitting = false;
+        return;
+      }
     }
 
     if (statusEl) {
