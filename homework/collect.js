@@ -533,6 +533,25 @@ function countFilesRecursive(node) {
   return count;
 }
 
+// 中文数字映射
+const CHINESE_NUM_MAP = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10, '十一':11,'十二':12,'十三':13,'十四':14,'十五':15,'十六':16,'十七':17,'十八':18,'十九':19,'二十':20 };
+
+// 从文件夹名中提取数字用于排序
+function extractFolderNumber(name) {
+  // 先尝试提取阿拉伯数字
+  const m = name.match(/(\d+)/);
+  if (m) return parseInt(m[1]);
+  // 尝试中文数字
+  const cnM = name.match(/[一二三四五六七八九十]+/);
+  if (cnM) return CHINESE_NUM_MAP[cnM[0]] || 999;
+  return 999;
+}
+
+// 按编号大小排序文件夹 key
+function sortFolderKeys(keys) {
+  return keys.sort((a, b) => extractFolderNumber(a) - extractFolderNumber(b));
+}
+
 // ============================================================
 // API 封装
 // ============================================================
@@ -865,8 +884,8 @@ function renderFileTree() {
   container.innerHTML = '';
   container.classList.add('fade-in');
 
-  // 渲染顶层文件夹（作业）
-  for (const hwKey of Object.keys(fileTree)) {
+  // 渲染顶层文件夹（作业），按编号大小排序
+  for (const hwKey of sortFolderKeys(Object.keys(fileTree))) {
     const hwNode = fileTree[hwKey];
     container.insertAdjacentHTML('beforeend', buildFolderHTML(hwKey, hwNode, 0));
   }
@@ -880,7 +899,7 @@ function renderFileTree() {
 // level 0 = 作业, level 1 = 活动, level 2 = 姓名
 function buildFolderHTML(name, node, level) {
   const fileCount = countFilesRecursive(node);
-  const subKeys = Object.keys(node).filter(k => k !== '_files' && typeof node[k] === 'object' && node[k] !== null);
+  const subKeys = sortFolderKeys(Object.keys(node).filter(k => k !== '_files' && typeof node[k] === 'object' && node[k] !== null));
   const files = node._files || [];
 
   const icons = ['\u{1F4DA}', '\u{1F3AF}', '\u{1F464}']; // 📚 🎯 👤
@@ -1736,7 +1755,7 @@ function renderStorage(data) {
   const panel = $('#storagePanel');
   if (!panel) return;
 
-  const { locations, totalFiles: tFiles, totalSize: tSize, backupEnabled } = data;
+  const { locations, totalFiles: tFiles, totalSize: tSize } = data;
 
   // 计算最大存储量用于进度条相对比例
   const maxSize = Math.max(...(locations || []).map(l => l.totalSize || 0), 1);
@@ -1767,7 +1786,6 @@ function renderStorage(data) {
     <div class="storage-card fade-in">
       <div class="storage-head">
         <h3>\u{1F4BE} 存储概览</h3>
-        ${backupEnabled ? '<span class="backup-tag">\u{2705} 备份已启用</span>' : '<span class="backup-tag" style="background:var(--danger-light);color:var(--danger);">\u{26A0}\u{FE0F} 未启用备份</span>'}
       </div>
       <div class="storage-summary">
         <div class="storage-summary-item">
