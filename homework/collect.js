@@ -1254,6 +1254,7 @@ function sleep(ms) {
 
 // 分块下载大文件，返回 Blob（使用 /api/download/chunk 端点，避免 Worker 加载整个文件到内存）
 // 优化：并行下载多个分块，大幅提升速度
+// 兼容 COS：后端对 COS 文件返回 chunkCount=1（通过 Range 透明处理），此时走流式下载以实时显示进度
 async function fetchBlobChunked(key, totalSize, onChunkProgress) {
   console.log('[fetchBlobChunked] 开始分块下载', { key, totalSize });
 
@@ -1278,10 +1279,17 @@ async function fetchBlobChunked(key, totalSize, onChunkProgress) {
   }
 
   const chunkCount = info.chunkCount || 1;
+  const storage = info.storage || '';
+  console.log(`[fetchBlobChunked] 分块数: ${chunkCount}, 存储类型: ${storage || '未知'}, 大小: ${totalSize}`);
+
+  // 单分块场景（如 COS 大文件，后端通过 Range 请求透明返回完整文件）：
+  // 使用流式下载逐块读取并实时报告进度，避免 arrayBuffer() 一次性加载且无进度反馈
+  if (chunkCount === 1) {
+    return downloadChunkStreamed(key, 0, chunkCount, totalSize, onChunkProgress);
+  }
+
   const chunks = new Array(chunkCount);
   let downloaded = 0;
-
-  console.log(`[fetchBlobChunked] 分块数: ${chunkCount}, 大小: ${totalSize}`);
 
   // Step 2: 下载单个分块（带重试）
   async function downloadChunk(chunkIndex) {
@@ -1392,6 +1400,53 @@ async function responseToBlobWithProgress(res, onProgress) {
     }
   }
   return new Blob(chunks);
+}
+
+// 从 Response 流式读取为 Blob，通过 onReceivedBytes 回调报告已接收字节数
+// 适用于单分块大文件（如 COS），可实时显示下载进度而不依赖 Content-Length
+async function streamResponseToBlob(res, onReceivedBytes) {
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const blob = await res.blob();
+    if (onReceivedBytes) onReceivedBytes(blob.size);
+    return blob;
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let receivedLength = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    receivedLength += value.length;
+    if (onReceivedBytes) onReceivedBytes(receivedLength);
+  }
+  return new Blob(chunks);
+}
+
+// 流式下载单个分块（带进度与重试）
+// 适用于 COS 等单分块大文件：通过 ReadableStream 逐块读取，实时报告已接收字节数
+async function downloadChunkStreamed(key, chunkIndex, chunkCount, totalSize, onProgress) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= CHUNK_MAX_RETRIES; attempt++) {
+    try {
+      const res = await apiFetch(`/api/download/chunk?key=${encodeURIComponent(key)}&chunkIndex=${chunkIndex}`);
+      if (res.ok) {
+        return await streamResponseToBlob(res, (received) => {
+          if (onProgress) onProgress(received, totalSize);
+        });
+      }
+      const errData = await res.json().catch(() => ({}));
+      lastError = new Error(errData.error || `分块 ${chunkIndex + 1}/${chunkCount} 下载失败（HTTP ${res.status}）`);
+      console.warn(`[downloadChunkStreamed] 分块 ${chunkIndex + 1}/${chunkCount} 失败 (HTTP ${res.status}), 重试 ${attempt + 1}/${CHUNK_MAX_RETRIES}`);
+    } catch (err) {
+      lastError = err;
+      console.warn(`[downloadChunkStreamed] 分块 ${chunkIndex + 1}/${chunkCount} 异常: ${err.message}, 重试 ${attempt + 1}/${CHUNK_MAX_RETRIES}`);
+    }
+    if (attempt < CHUNK_MAX_RETRIES) {
+      await sleep(CHUNK_RETRY_DELAY * (attempt + 1));
+    }
+  }
+  throw lastError || new Error(`分块 ${chunkIndex + 1}/${chunkCount} 下载失败`);
 }
 
 function updateDlFileStatus(idx, status, text) {
