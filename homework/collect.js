@@ -1266,6 +1266,49 @@ const CHUNK_THRESHOLD = 5 * 1024 * 1024; // 5MB
 const CHUNK_MAX_RETRIES = 3; // 每个分块最大重试次数
 const CHUNK_RETRY_DELAY = 1000; // 重试间隔（毫秒）
 
+// 前端 MIME 类型映射（与后端 getContentTypeForExt 保持一致）
+// 用于分块下载合并时设置正确的 Blob 类型
+const MIME_MAP = {
+  // 图片
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', heic: 'image/heic', svg: 'image/svg+xml',
+  tiff: 'image/tiff', tif: 'image/tiff', ico: 'image/x-icon',
+  // 视频
+  mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
+  mkv: 'video/x-matroska', flv: 'video/x-flv', wmv: 'video/x-ms-wmv',
+  webm: 'video/webm', m4v: 'video/x-m4v', '3gp': 'video/3gpp',
+  mpeg: 'video/mpeg', mpg: 'video/mpeg',
+  // 音频
+  mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac',
+  flac: 'audio/flac', ogg: 'audio/ogg', wma: 'audio/x-ms-wma',
+  // 文档
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xls: 'application/vnd.ms-excel',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ppt: 'application/vnd.ms-powerpoint',
+  txt: 'text/plain', rtf: 'application/rtf', csv: 'text/csv',
+  md: 'text/markdown', html: 'text/html', htm: 'text/html',
+  // 压缩包
+  zip: 'application/zip', rar: 'application/vnd.rar',
+  '7z': 'application/x-7z-compressed', tar: 'application/x-tar',
+  gz: 'application/gzip', gzip: 'application/gzip', bz2: 'application/x-bzip2',
+  // 其他
+  json: 'application/json', xml: 'application/xml',
+  js: 'application/javascript', css: 'text/css',
+};
+
+// 从文件 key 中提取 Content-Type
+function getContentTypeFromKey(key) {
+  const filename = key.split('/').pop();
+  const parts = filename.split('.');
+  if (parts.length < 2) return 'application/octet-stream';
+  const ext = parts.pop().toLowerCase();
+  return MIME_MAP[ext] || 'application/octet-stream';
+}
+
 // 延迟函数
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -1366,7 +1409,8 @@ async function fetchBlobChunked(key, totalSize, onChunkProgress) {
   await Promise.all(workers);
 
   console.log(`[fetchBlobChunked] 下载完成, 总大小: ${downloaded}, 并发数: ${MAX_CONCURRENT}`);
-  return new Blob(chunks);
+  const blobContentType = getContentTypeFromKey(key);
+  return new Blob(chunks, { type: blobContentType });
 }
 
 // 统一的文件下载函数：小文件直接下载，大文件分块下载
@@ -1401,6 +1445,7 @@ async function fetchFileBlob(key, fileSize, onProgress) {
 // 从 Response 流式读取为 Blob，并追踪进度
 async function responseToBlobWithProgress(res, onProgress) {
   const contentLength = parseInt(res.headers.get('Content-Length') || '0');
+  const contentType = res.headers.get('Content-Type') || 'application/octet-stream';
   if (!res.body || typeof res.body.getReader !== 'function') {
     const blob = await res.blob();
     onProgress(100);
@@ -1418,12 +1463,14 @@ async function responseToBlobWithProgress(res, onProgress) {
       onProgress(Math.round((receivedLength / contentLength) * 100));
     }
   }
-  return new Blob(chunks);
+  return new Blob(chunks, { type: contentType });
 }
 
 // 从 Response 流式读取为 Blob，通过 onReceivedBytes 回调报告已接收字节数
 // 适用于单分块大文件（如 COS），可实时显示下载进度而不依赖 Content-Length
 async function streamResponseToBlob(res, onReceivedBytes) {
+  // 从响应头获取 Content-Type，用于创建正确类型的 Blob
+  const contentType = res.headers.get('Content-Type') || 'application/octet-stream';
   if (!res.body || typeof res.body.getReader !== 'function') {
     const blob = await res.blob();
     if (onReceivedBytes) onReceivedBytes(blob.size);
@@ -1439,7 +1486,7 @@ async function streamResponseToBlob(res, onReceivedBytes) {
     receivedLength += value.length;
     if (onReceivedBytes) onReceivedBytes(receivedLength);
   }
-  return new Blob(chunks);
+  return new Blob(chunks, { type: contentType });
 }
 
 // 流式下载单个分块（带进度与重试）
@@ -1564,6 +1611,8 @@ async function downloadWithProgress(files, zipName) {
     return;
   }
 
+  const totalSize = files.reduce((s, f) => s + (f.size || 0), 0);
+
   showModal(`
     <div class="modal-head">
       <h3>\u{1F4E6} 正在下载并打包 ${files.length} 个文件</h3>
@@ -1591,7 +1640,6 @@ async function downloadWithProgress(files, zipName) {
   try {
     const zipContents = {};
     let completedFiles = 0;
-    const totalSize = files.reduce((s, f) => s + (f.size || 0), 0);
     let downloadedSize = 0;
     const batchStartTime = Date.now();
 
