@@ -1404,7 +1404,22 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
     throw lastError;
   }
 
+  // 取消上传：清理服务器端的分片上传碎片，避免 COS 存储费用
+  async function abortUploads(failedKeys) {
+    if (!failedKeys || failedKeys.length === 0) return;
+    try {
+      await fetch(`${API}/upload/abort`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys: failedKeys }),
+      });
+    } catch (e) {
+      console.warn('取消上传清理失败:', e.message);
+    }
+  }
+
   const uploadFileInfos = [];
+  const startedKeys = []; // 已开始上传的文件 key（用于失败时清理）
 
   // Step 2: 逐文件上传（每个文件内并行上传分块）
   for (let i = 0; i < items.length; i++) {
@@ -1420,6 +1435,7 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
 
     if (chunkCount <= 1) {
       // 小文件直接上传（不分块）
+      startedKeys.push(item.key);
       try {
         const size = await uploadSingleChunk(item.key, 0, blob);
         uploadedBytes += size;
@@ -1429,6 +1445,8 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
           statusEl.className = 'upload-status error';
           statusEl.textContent = '失败';
         }
+        // 清理已上传的分片碎片
+        await abortUploads(startedKeys);
         render();
         showAlert(`文件 "${item.filename}" 上传失败：${e.message}`, 'error');
         submitting = false;
@@ -1436,6 +1454,7 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
       }
     } else {
       // 大文件：并行上传分块
+      startedKeys.push(item.key);
       const chunkUploads = [];
       for (let c = 0; c < chunkCount; c++) {
         const start = c * serverChunkSize;
@@ -1479,6 +1498,8 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
           statusEl.className = 'upload-status error';
           statusEl.textContent = '失败';
         }
+        // 清理已上传的分片碎片
+        await abortUploads(startedKeys);
         render();
         showAlert(`文件 "${item.filename}" 上传失败：${fileError.message}`, 'error');
         submitting = false;
