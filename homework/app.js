@@ -1279,8 +1279,10 @@ async function submitFiles() {
 
 // ============ 分块上传模式（KV 存储后端，并行多线程上传）============
 async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
-  const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB per chunk
-  const MAX_CONCURRENT_CHUNKS = 3; // 每个文件最多并发上传3个分块
+  const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB per chunk（CloudBase 6MB 限制下安全）
+  const MAX_CONCURRENT_CHUNKS = 5; // 每个文件最多并发上传5个分块
+  const MAX_RETRIES = 5; // 每个分块最多重试 5 次
+  const RETRY_BASE_DELAY = 800; // 初始重试延迟（毫秒），指数退避
 
   // Step 1: 调用 prepare 获取文件存储路径
   const fileMetas = allFiles.map(f => ({ name: f.name, size: f.size }));
@@ -1373,12 +1375,14 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
     if (detailEl) detailEl.textContent = `${formatSize(uploadedBytes)} / ${formatSize(totalSize)}  ·  ${formatSpeed(speed)}  ·  ${percent}%`;
   }
 
-  // 上传单个分块（带重试）
+  // 上传单个分块（带指数退避重试 + 超时控制）
   async function uploadSingleChunk(fileKey, chunkIndex, chunkBlob) {
-    const MAX_RETRIES = 3;
     let lastError = null;
+    const chunkTimeout = 120000; // 单分片超时 120 秒
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), chunkTimeout);
       try {
         const formData = new FormData();
         formData.append('fileKey', fileKey);
@@ -1388,38 +1392,32 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
         const chunkRes = await fetch(`${API}/upload/chunk`, {
           method: 'POST',
           body: formData,
+          signal: controller.signal,
         });
+        clearTimeout(timeoutId);
         const chunkData = await chunkRes.json();
         if (chunkData.success) {
           return chunkBlob.size;
         }
-        lastError = new Error(chunkData.error || `块 ${chunkIndex} 上传失败`);
+        lastError = new Error(chunkData.error || `块 ${chunkIndex + 1} 上传失败`);
       } catch (e) {
-        lastError = e;
+        clearTimeout(timeoutId);
+        if (e.name === 'AbortError') {
+          lastError = new Error(`块 ${chunkIndex + 1} 上传超时`);
+        } else {
+          lastError = e;
+        }
       }
       if (attempt < MAX_RETRIES) {
-        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        // 指数退避：800ms → 1.6s → 3.2s → 6.4s → 12.8s
+        const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);
+        await new Promise(r => setTimeout(r, delay));
       }
     }
     throw lastError;
   }
 
-  // 取消上传：清理服务器端的分片上传碎片，避免 COS 存储费用
-  async function abortUploads(failedKeys) {
-    if (!failedKeys || failedKeys.length === 0) return;
-    try {
-      await fetch(`${API}/upload/abort`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keys: failedKeys }),
-      });
-    } catch (e) {
-      console.warn('取消上传清理失败:', e.message);
-    }
-  }
-
   const uploadFileInfos = [];
-  const startedKeys = []; // 已开始上传的文件 key（用于失败时清理）
 
   // Step 2: 逐文件上传（每个文件内并行上传分块）
   for (let i = 0; i < items.length; i++) {
@@ -1435,7 +1433,6 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
 
     if (chunkCount <= 1) {
       // 小文件直接上传（不分块）
-      startedKeys.push(item.key);
       try {
         const size = await uploadSingleChunk(item.key, 0, blob);
         uploadedBytes += size;
@@ -1445,8 +1442,6 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
           statusEl.className = 'upload-status error';
           statusEl.textContent = '失败';
         }
-        // 清理已上传的分片碎片
-        await abortUploads(startedKeys);
         render();
         showAlert(`文件 "${item.filename}" 上传失败：${e.message}`, 'error');
         submitting = false;
@@ -1454,7 +1449,6 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
       }
     } else {
       // 大文件：并行上传分块
-      startedKeys.push(item.key);
       const chunkUploads = [];
       for (let c = 0; c < chunkCount; c++) {
         const start = c * serverChunkSize;
@@ -1498,8 +1492,6 @@ async function submitDirectUpload(allFiles, areaFilesMap, psychIndex) {
           statusEl.className = 'upload-status error';
           statusEl.textContent = '失败';
         }
-        // 清理已上传的分片碎片
-        await abortUploads(startedKeys);
         render();
         showAlert(`文件 "${item.filename}" 上传失败：${fileError.message}`, 'error');
         submitting = false;
