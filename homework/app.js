@@ -1,8 +1,6 @@
-// 高一（13）班暑期德育作业收集 - 前端逻辑
+// 高二（13）班暑期德育作业收集 - 前端逻辑
 // API 地址：由 config.js 中的 API_BASE 定义，若未加载则回退到同源 /api
-let API = typeof API_BASE !== 'undefined' ? API_BASE : '/api';
-// 备用 API 地址（CloudBase 不可用时回退到 Cloudflare Worker 直连）
-const DIRECT_API = typeof DIRECT_API_BASE !== 'undefined' ? DIRECT_API_BASE : null;
+const API = typeof API_BASE !== 'undefined' ? API_BASE : '/api';
 let CONFIG = null;
 
 const state = {
@@ -1632,69 +1630,17 @@ function showAlert(msg, type = 'error') {
 }
 
 // ============ 初始化 ============
-// 尝试从指定 API 地址加载配置
-async function fetchConfigFrom(apiBase) {
-  const res = await fetch(`${apiBase}/config`);
-  const data = await res.json();
-  // 检查 API 是否返回了错误响应（如云函数不可用、余额不足等）
-  if (!data || !data.homeworks) {
-    // 检测 CloudBase 余额不足错误
-    if (data?.code === 'FUNCTIONS_INVOCATION_FAILED' || (data?.message && data.message.includes('InsufficientBalance'))) {
-      throw new Error('云服务余额不足');
-    }
-    const errMsg = data?.message || data?.error || '配置数据不完整';
-    throw new Error(errMsg);
-  }
-  return data;
-}
-
 async function init() {
   try {
-    let data;
-    let usedApi = API;
-    try {
-      // 优先使用 CloudBase 云函数代理
-      data = await fetchConfigFrom(API);
-    } catch (primaryErr) {
-      console.warn('主 API 失败:', primaryErr.message);
-      // 尝试回退到 Cloudflare Worker 直连
-      if (DIRECT_API && DIRECT_API !== API) {
-        try {
-          data = await fetchConfigFrom(DIRECT_API);
-          usedApi = DIRECT_API;
-          console.log('回退到备用 API 成功');
-        } catch (fallbackErr) {
-          console.warn('备用 API 也失败:', fallbackErr.message);
-          // 两个 API 都失败，抛出更友好的错误
-          if (primaryErr.message.includes('余额不足')) {
-            throw new Error('云服务余额不足，云函数暂时不可用。备用地址也无法连接，请联系管理员充值。');
-          }
-          throw new Error(`主服务: ${primaryErr.message}；备用服务: ${fallbackErr.message}`);
-        }
-      } else {
-        throw primaryErr;
-      }
-    }
-
-    // 如果使用了备用 API，需要替换全局 API 变量
-    if (usedApi !== API) {
-      API = usedApi;
-    }
-
+    const res = await fetch(`${API}/config`);
+    const data = await res.json();
     CONFIG = data;
     if (data.maxFileSize) state.maxFileSize = data.maxFileSize;
     render();
   } catch (e) {
-    const isBalanceIssue = e.message.includes('余额不足');
     document.getElementById('content').innerHTML = `
       <div class="card">
         <div class="alert alert-error">加载配置失败：${escapeHtml(e.message)}</div>
-        <div style="margin-top:12px;color:var(--text-light);font-size:13px;">
-          ${isBalanceIssue
-            ? '云函数因余额不足暂时不可用，请联系管理员充值后重试。'
-            : '如果持续出现此错误，可能是云服务余额不足，请联系管理员。'
-          }
-        </div>
       </div>
     `;
   }
