@@ -1544,10 +1544,25 @@ function formatSpeed(bytesPerSec) {
   return (bytesPerSec / 1048576).toFixed(2) + ' MB/s';
 }
 
+// 手机端检测
+function isMobileDevice() {
+  return /Android|iPhone|iPad|iPod|Windows Phone|Mobile/i.test(navigator.userAgent) ||
+    (window.innerWidth <= 768 && 'ontouchstart' in window);
+}
+
+// 手机端下载大小限制（20MB）
+const MOBILE_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
+
 // 单文件下载（带进度，大文件自动分块）
 async function downloadFile(key, filename, fileSize) {
   const fname = filename || (key ? key.split('/').pop() : 'download');
   const totalSize = fileSize || 0;
+
+  // 手机端限制：超过20MB不允许下载
+  if (isMobileDevice() && totalSize > MOBILE_DOWNLOAD_LIMIT) {
+    showToast('因手机浏览器限制，无法下载超过20MB的文件，请至电脑端下载', 'error');
+    return;
+  }
 
   showModal(`
     <div class="modal-head">
@@ -1612,6 +1627,12 @@ async function downloadWithProgress(files, zipName) {
   }
 
   const totalSize = files.reduce((s, f) => s + (f.size || 0), 0);
+
+  // 手机端限制：总大小超过20MB不允许下载
+  if (isMobileDevice() && totalSize > MOBILE_DOWNLOAD_LIMIT) {
+    showToast('因手机浏览器限制，无法下载超过20MB的文件，请至电脑端下载', 'error');
+    return;
+  }
 
   showModal(`
     <div class="modal-head">
@@ -1772,7 +1793,7 @@ async function downloadAll() {
       showToast(data.error || '获取文件列表失败', 'error');
       return;
     }
-    await downloadWithProgress(data.files, '高一（13）班暑期德育作业.zip');
+    await downloadWithProgress(data.files, '高二（13）班暑期德育作业.zip');
   } catch (err) {
     if (err.message !== '未授权') {
       showToast(err.message || '下载失败', 'error');
